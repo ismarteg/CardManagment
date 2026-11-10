@@ -1,0 +1,9 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/IdCard.Api/IdCard.Api.csproj" />
+    <Project Path="src/IdCard.Connectors/IdCard.Connectors.csproj" />
+    <Project Path="src/IdCard.Domain/IdCard.Domain.csproj" />
+    <Project Path="src/IdCard.Infrastructure/IdCard.Infrastructure.csproj" />
+    <Project Path="src/IdCard.PrintAgent/IdCard.PrintAgent.csproj" />
+  </Folder>
+</Solution>

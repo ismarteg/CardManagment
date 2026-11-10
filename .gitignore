@@ -1,0 +1,40 @@
+## .NET
+bin/
+obj/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+.vs/
+*.db
+*.db-shm
+*.db-wal
+appsettings.Development.json
+**/keys/
+**/dataprotection-keys/
+
+## Node / Angular
+node_modules/
+dist/
+.angular/
+*.log
+npm-debug.log*
+
+## IDE
+.idea/
+*.swp
+.DS_Store
+
+## Secrets / local
+*.pfx
+.env
+.env.*
+!*.env.example
+secrets.json
+
+## Print agent local
+**/agent-config.local.json
+
+## OS
+Thumbs.db
+Desktop.ini

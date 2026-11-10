@@ -1,0 +1,6 @@
+@IdCard.Api_HostAddress = http://localhost:5152
+
+GET {{IdCard.Api_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###
