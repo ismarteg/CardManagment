@@ -10,6 +10,8 @@ public class CardProject
     public string CardSize { get; set; } = "CR80";
     public bool DualSided { get; set; } = true;
     public DataMode DataMode { get; set; } = DataMode.Internal;
+    /// <summary>Logical table name for internal SQLite mode (user-defined schema).</summary>
+    public string? InternalTableName { get; set; }
     public DatabaseType? ExternalDatabaseType { get; set; }
     public string? EncryptedConnectionString { get; set; }
     public string? ExternalTableName { get; set; }

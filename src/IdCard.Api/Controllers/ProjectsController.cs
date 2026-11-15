@@ -23,13 +23,20 @@ public class ProjectsController : ControllerBase
     private readonly ISecretProtector _protector;
     private readonly IDataConnectorFactory _connectors;
     private readonly IAuditService _audit;
+    private readonly IWebHostEnvironment _env;
 
-    public ProjectsController(AppDbContext db, ISecretProtector protector, IDataConnectorFactory connectors, IAuditService audit)
+    public ProjectsController(
+        AppDbContext db,
+        ISecretProtector protector,
+        IDataConnectorFactory connectors,
+        IAuditService audit,
+        IWebHostEnvironment env)
     {
         _db = db;
         _protector = protector;
         _connectors = connectors;
         _audit = audit;
+        _env = env;
     }
 
     [HttpGet]
@@ -50,6 +57,10 @@ public class ProjectsController : ControllerBase
     [Authorize(Roles = $"{nameof(UserRole.Admin)},{nameof(UserRole.Designer)}")]
     public async Task<ActionResult<ProjectDto>> Create([FromBody] CreateProjectRequest request, CancellationToken ct)
     {
+        var fields = NormalizeFields(request.FieldMappings);
+        if (request.DataMode == DataMode.Internal && fields.Count == 0)
+            return BadRequest(new { message = "Define at least one column for the internal table." });
+
         var project = new CardProject
         {
             Name = request.Name,
@@ -57,12 +68,15 @@ public class ProjectsController : ControllerBase
             CardSize = request.CardSize,
             DualSided = request.DualSided,
             DataMode = request.DataMode,
+            InternalTableName = string.IsNullOrWhiteSpace(request.InternalTableName)
+                ? SanitizeTableName(request.Name)
+                : SanitizeTableName(request.InternalTableName),
             ExternalDatabaseType = request.ExternalDatabaseType,
             EncryptedConnectionString = string.IsNullOrWhiteSpace(request.ConnectionString) ? null : _protector.Protect(request.ConnectionString),
             ExternalTableName = request.ExternalTableName,
             ExternalFilterSql = request.ExternalFilterSql,
             AllowExternalWriteBack = request.AllowExternalWriteBack,
-            FieldMappingsJson = JsonSerializer.Serialize(request.FieldMappings ?? new List<FieldMapping>()),
+            FieldMappingsJson = JsonSerializer.Serialize(fields),
             DefaultPrinterId = request.DefaultPrinterId
         };
         _db.Projects.Add(project);
@@ -83,6 +97,8 @@ public class ProjectsController : ControllerBase
         project.CardSize = request.CardSize;
         project.DualSided = request.DualSided;
         project.DataMode = request.DataMode;
+        if (!string.IsNullOrWhiteSpace(request.InternalTableName))
+            project.InternalTableName = SanitizeTableName(request.InternalTableName);
         project.ExternalDatabaseType = request.ExternalDatabaseType;
         if (!string.IsNullOrWhiteSpace(request.ConnectionString))
             project.EncryptedConnectionString = _protector.Protect(request.ConnectionString);
@@ -90,7 +106,12 @@ public class ProjectsController : ControllerBase
         project.ExternalFilterSql = request.ExternalFilterSql;
         project.AllowExternalWriteBack = request.AllowExternalWriteBack;
         if (request.FieldMappings is not null)
-            project.FieldMappingsJson = JsonSerializer.Serialize(request.FieldMappings);
+        {
+            var fields = NormalizeFields(request.FieldMappings);
+            if (project.DataMode == DataMode.Internal && fields.Count == 0)
+                return BadRequest(new { message = "Define at least one column for the internal table." });
+            project.FieldMappingsJson = JsonSerializer.Serialize(fields);
+        }
         if (request.DesignJson is not null)
         {
             project.DesignJson = request.DesignJson;
@@ -148,13 +169,79 @@ public class ProjectsController : ControllerBase
         return Ok(columns);
     }
 
+    /// <summary>Upload a static design image (logo, seal, etc). Returns a /files/uploads URL for design JSON.</summary>
+    [HttpPost("{id:guid}/design-assets")]
+    [Authorize(Roles = $"{nameof(UserRole.Admin)},{nameof(UserRole.Designer)}")]
+    [RequestSizeLimit(52_428_800)]
+    public async Task<ActionResult> UploadDesignAsset(Guid id, IFormFile file, CancellationToken ct)
+    {
+        var project = await _db.Projects.AsNoTracking().FirstOrDefaultAsync(p => p.Id == id, ct);
+        if (project is null) return NotFound();
+        if (file is null || file.Length == 0) return BadRequest(new { message = "File required" });
+
+        var ext = Path.GetExtension(file.FileName);
+        if (string.IsNullOrWhiteSpace(ext) || ext.Length > 8) ext = ".png";
+        var dir = Path.Combine(_env.ContentRootPath, "uploads", "design", id.ToString());
+        Directory.CreateDirectory(dir);
+        var name = $"{Guid.NewGuid():N}{ext.ToLowerInvariant()}";
+        var path = Path.Combine(dir, name);
+        await using (var fs = System.IO.File.Create(path))
+            await file.CopyToAsync(fs, ct);
+
+        var url = $"/files/uploads/design/{id}/{name}";
+        await _audit.LogAsync("Project.DesignAssetUploaded", ActorType.User, GetUserId(), GetUserName(),
+            projectId: id, details: new { url, file.FileName, file.Length }, ct: ct);
+        return Ok(new { url, fileName = file.FileName });
+    }
+
     private ProjectDto Map(CardProject p)
     {
         var mappings = JsonSerializer.Deserialize<List<FieldMapping>>(p.FieldMappingsJson) ?? new();
         return new ProjectDto(
-            p.Id, p.Name, p.Description, p.CardSize, p.DualSided, p.DataMode, p.ExternalDatabaseType,
-            p.ExternalTableName, p.AllowExternalWriteBack, mappings, p.DesignJson, p.DesignVersion,
-            p.DefaultPrinterId, !string.IsNullOrEmpty(p.EncryptedConnectionString));
+            p.Id, p.Name, p.Description, p.CardSize, p.DualSided, p.DataMode, p.InternalTableName,
+            p.ExternalDatabaseType, p.ExternalTableName, p.AllowExternalWriteBack, mappings, p.DesignJson,
+            p.DesignVersion, p.DefaultPrinterId, !string.IsNullOrEmpty(p.EncryptedConnectionString));
+    }
+
+    private static List<FieldMapping> NormalizeFields(List<FieldMapping>? fields)
+    {
+        if (fields is null) return new();
+        var result = new List<FieldMapping>();
+        foreach (var f in fields)
+        {
+            var name = SanitizeColumnName(string.IsNullOrWhiteSpace(f.SourceColumn) ? f.DesignField : f.SourceColumn);
+            if (string.IsNullOrWhiteSpace(name)) continue;
+            var dataType = string.IsNullOrWhiteSpace(f.DataType) ? "string" : f.DataType.Trim().ToLowerInvariant();
+            if (dataType is "photo (binary)" or "photobinary") dataType = "photo_binary";
+            result.Add(new FieldMapping
+            {
+                DesignField = string.IsNullOrWhiteSpace(f.DesignField) ? name : f.DesignField.Trim(),
+                SourceColumn = name,
+                Label = string.IsNullOrWhiteSpace(f.Label) ? name : f.Label.Trim(),
+                DataType = dataType,
+                IsPhoto = f.IsPhoto || dataType is "photo" or "photo_binary",
+                IsKey = f.IsKey,
+                Required = f.Required || f.IsKey
+            });
+        }
+        return result;
+    }
+
+    private static string SanitizeTableName(string value)
+    {
+        var cleaned = new string(value.Where(c => char.IsLetterOrDigit(c) || c == '_').ToArray());
+        if (string.IsNullOrWhiteSpace(cleaned)) return "Table1";
+        if (char.IsDigit(cleaned[0])) cleaned = "T_" + cleaned;
+        return cleaned;
+    }
+
+    private static string SanitizeColumnName(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return string.Empty;
+        var cleaned = new string(value.Where(c => char.IsLetterOrDigit(c) || c == '_').ToArray());
+        if (string.IsNullOrWhiteSpace(cleaned)) return string.Empty;
+        if (char.IsDigit(cleaned[0])) cleaned = "C_" + cleaned;
+        return cleaned;
     }
 
     private Guid? GetUserId() => Guid.TryParse(User.FindFirstValue(ClaimTypes.NameIdentifier), out var id) ? id : null;

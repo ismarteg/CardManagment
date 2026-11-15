@@ -57,7 +57,14 @@ public class PrintController : ControllerBase
         foreach (var item in request.Records)
         {
             var jobId = Guid.NewGuid();
-            var (front, back) = await _renderer.RenderAsync(design, item.Data, outputDir, jobId, project.DualSided, ct);
+            var data = new Dictionary<string, object?>(item.Data ?? new(), StringComparer.OrdinalIgnoreCase);
+            var record = await _db.InternalRecords.AsNoTracking()
+                .FirstOrDefaultAsync(r => r.ProjectId == project.Id && r.ExternalKey == item.Key, ct);
+            if (record is not null)
+                await MaterializePhotosAsync(record.Id, data, ct);
+            ResolveLocalFilePaths(data);
+
+            var (front, back) = await _renderer.RenderAsync(design, data, outputDir, jobId, project.DualSided, ct);
             var job = new PrintJob
             {
                 Id = jobId,
@@ -137,23 +144,85 @@ public class PrintController : ControllerBase
         if (project is null) return NotFound();
 
         Dictionary<string, object?> data;
-        if (Guid.TryParse(recordId, out var rid))
+        Guid? rid = Guid.TryParse(recordId, out var parsed) ? parsed : null;
+        if (rid is not null)
         {
             var record = await _db.InternalRecords.AsNoTracking().FirstOrDefaultAsync(r => r.Id == rid && r.ProjectId == projectId, ct);
             if (record is null) return NotFound();
             data = JsonSerializer.Deserialize<Dictionary<string, object?>>(record.DataJson) ?? new();
             if (!string.IsNullOrEmpty(record.PhotoPath)) data["Photo"] = record.PhotoPath;
+            await MaterializePhotosAsync(rid.Value, data, ct);
         }
         else
         {
             data = new Dictionary<string, object?> { ["FullName"] = "Sample User", ["StudentId"] = "0000" };
         }
 
+        return await RenderPreviewAsync(project, data, ct);
+    }
+
+    /// <summary>Preview using provided record data (used for external DB rows that have no internal id).</summary>
+    [HttpPost("preview/{projectId:guid}")]
+    public async Task<ActionResult> PreviewWithData(Guid projectId, [FromBody] PreviewDataRequest request, CancellationToken ct)
+    {
+        var project = await _db.Projects.AsNoTracking().FirstOrDefaultAsync(p => p.Id == projectId, ct);
+        if (project is null) return NotFound();
+        var data = request.Data ?? new Dictionary<string, object?>();
+        return await RenderPreviewAsync(project, data, ct);
+    }
+
+    private async Task<ActionResult> RenderPreviewAsync(
+        CardProject project,
+        Dictionary<string, object?> data,
+        CancellationToken ct)
+    {
+        ResolveLocalFilePaths(data);
         var design = CardRenderService.ParseDesign(project.DesignJson);
         var dir = Path.Combine(_env.ContentRootPath, "uploads", "previews");
         var id = Guid.NewGuid();
         var (front, back) = await _renderer.RenderAsync(design, data, dir, id, project.DualSided, ct);
-        return Ok(new { frontImage = ToRelative(front), backImage = ToRelative(back) });
+        return Ok(new
+        {
+            frontImage = ToRelative(front),
+            backImage = ToRelative(back),
+            cacheBust = DateTime.UtcNow.Ticks
+        });
+    }
+
+    private async Task MaterializePhotosAsync(Guid recordId, Dictionary<string, object?> data, CancellationToken ct)
+    {
+        var photos = await _db.RecordPhotos.AsNoTracking().Where(p => p.RecordId == recordId).ToListAsync(ct);
+        var tempDir = Path.Combine(_env.ContentRootPath, "uploads", "temp-photos", recordId.ToString());
+        Directory.CreateDirectory(tempDir);
+        foreach (var photo in photos)
+        {
+            var target = Path.Combine(tempDir, $"{photo.FieldName}{Path.GetExtension(photo.FileName ?? ".jpg")}");
+            if (photo.StorageMode == "Binary" && photo.BinaryData is { Length: > 0 })
+            {
+                await System.IO.File.WriteAllBytesAsync(target, photo.BinaryData, ct);
+                data[photo.FieldName] = target;
+            }
+            else if (!string.IsNullOrWhiteSpace(photo.FilePath) && System.IO.File.Exists(photo.FilePath))
+            {
+                data[photo.FieldName] = photo.FilePath;
+            }
+        }
+    }
+
+    private void ResolveLocalFilePaths(Dictionary<string, object?> data)
+    {
+        var uploadsRoot = Path.Combine(_env.ContentRootPath, "uploads");
+        foreach (var key in data.Keys.ToList())
+        {
+            var val = data[key]?.ToString();
+            if (string.IsNullOrWhiteSpace(val)) continue;
+            if (val.StartsWith("/files/uploads/", StringComparison.OrdinalIgnoreCase))
+            {
+                var relative = val["/files/uploads/".Length..].Replace('/', Path.DirectorySeparatorChar);
+                var abs = Path.Combine(uploadsRoot, relative);
+                if (System.IO.File.Exists(abs)) data[key] = abs;
+            }
+        }
     }
 
     private string? ToRelative(string? path)
@@ -173,3 +242,4 @@ public class PrintController : ControllerBase
 
 public record QueuePrintRequest(Guid ProjectId, Guid? PrinterId, List<PrintRecordItem> Records);
 public record PrintRecordItem(string Key, Dictionary<string, object?> Data);
+public record PreviewDataRequest(Dictionary<string, object?>? Data);

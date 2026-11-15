@@ -11,4 +11,5 @@ public class InternalRecord
     public DateTime UpdatedAtUtc { get; set; } = DateTime.UtcNow;
 
     public CardProject? Project { get; set; }
+    public ICollection<RecordPhoto> Photos { get; set; } = new List<RecordPhoto>();
 }

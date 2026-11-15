@@ -22,9 +22,28 @@ export class ApiService {
     if (search) params = params.set('search', search);
     return this.http.get<any[]>(`${this.base}/api/projects/${projectId}/records`, { params });
   }
-  createRecord(projectId: string, body: any) { return this.http.post(`${this.base}/api/projects/${projectId}/records`, body); }
-  updateRecord(projectId: string, recordId: string, body: any) { return this.http.put(`${this.base}/api/projects/${projectId}/records/${recordId}`, body); }
+  createRecord(projectId: string, body: any) { return this.http.post<any>(`${this.base}/api/projects/${projectId}/records`, body); }
+  updateRecord(projectId: string, recordId: string, body: any) { return this.http.put<any>(`${this.base}/api/projects/${projectId}/records/${recordId}`, body); }
   deleteRecord(projectId: string, recordId: string) { return this.http.delete(`${this.base}/api/projects/${projectId}/records/${recordId}`); }
+  uploadRecordPhoto(projectId: string, recordId: string, fieldName: string, file: File, storage: 'file' | 'binary') {
+    const fd = new FormData();
+    fd.append('file', file);
+    return this.http.post<any>(
+      `${this.base}/api/projects/${projectId}/records/${recordId}/photos/${encodeURIComponent(fieldName)}?storage=${storage}`,
+      fd
+    );
+  }
+  uploadDesignAsset(projectId: string, file: File) {
+    const fd = new FormData();
+    fd.append('file', file);
+    return this.http.post<{ url: string; fileName: string }>(
+      `${this.base}/api/projects/${projectId}/design-assets`,
+      fd
+    );
+  }
+  photoUrl(projectId: string, recordId: string, fieldName: string) {
+    return `${this.base}/api/projects/${projectId}/records/${recordId}/photos/${encodeURIComponent(fieldName)}`;
+  }
   importCsv(projectId: string, file: File) {
     const fd = new FormData();
     fd.append('file', file);
@@ -46,6 +65,9 @@ export class ApiService {
     let params = new HttpParams();
     if (recordId) params = params.set('recordId', recordId);
     return this.http.get<any>(`${this.base}/api/print/preview/${projectId}`, { params });
+  }
+  previewWithData(projectId: string, data: Record<string, any>) {
+    return this.http.post<any>(`${this.base}/api/print/preview/${projectId}`, { data });
   }
 
   getAudit(paramsObj: Record<string, string>) {

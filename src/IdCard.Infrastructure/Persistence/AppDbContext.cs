@@ -11,6 +11,7 @@ public class AppDbContext : DbContext
     public DbSet<AppSetting> Settings => Set<AppSetting>();
     public DbSet<CardProject> Projects => Set<CardProject>();
     public DbSet<InternalRecord> InternalRecords => Set<InternalRecord>();
+    public DbSet<RecordPhoto> RecordPhotos => Set<RecordPhoto>();
     public DbSet<Printer> Printers => Set<Printer>();
     public DbSet<PrintAgentDevice> Agents => Set<PrintAgentDevice>();
     public DbSet<AgentPairingCode> PairingCodes => Set<AgentPairingCode>();
@@ -43,6 +44,14 @@ public class AppDbContext : DbContext
         {
             e.HasIndex(x => new { x.ProjectId, x.ExternalKey });
             e.HasOne(x => x.Project).WithMany(p => p.InternalRecords).HasForeignKey(x => x.ProjectId).OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<RecordPhoto>(e =>
+        {
+            e.HasIndex(x => new { x.RecordId, x.FieldName }).IsUnique();
+            e.Property(x => x.FieldName).HasMaxLength(100);
+            e.Property(x => x.StorageMode).HasMaxLength(20);
+            e.HasOne(x => x.Record).WithMany(r => r.Photos).HasForeignKey(x => x.RecordId).OnDelete(DeleteBehavior.Cascade);
         });
 
         modelBuilder.Entity<Printer>(e =>

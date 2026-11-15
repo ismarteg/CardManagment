@@ -11,6 +11,11 @@
 
 Each project stores data mode (internal/external), encrypted connection, field mappings, and versioned design JSON (front/back).
 
+### Internal SQLite mode
+
+Users create a logical table (`InternalTableName`) and define columns (name, label, type, key, required).  
+Column definitions are stored in `FieldMappingsJson`. Record values are stored as JSON in `InternalRecords` and the UI/forms are driven by that schema.
+
 ## Print flow
 
 1. Operator selects records in web UI
